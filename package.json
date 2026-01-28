@@ -1,0 +1,94 @@
+{
+  "name": "chainguard-dockerfile-converter",
+  "displayName": "Chainguard Dockerfile Converter",
+  "description": "Convert Dockerfiles to use Chainguard's secure, zero-CVE container images",
+  "version": "0.1.0",
+  "publisher": "chainguard",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "docker",
+    "dockerfile",
+    "chainguard",
+    "security",
+    "containers"
+  ],
+  "activationEvents": [
+    "onLanguage:dockerfile"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "chainguard.convertDockerfile",
+        "title": "Chainguard: Convert Dockerfile"
+      },
+      {
+        "command": "chainguard.showConversionPreview",
+        "title": "Chainguard: Show Conversion Preview"
+      }
+    ],
+    "configuration": {
+      "title": "Chainguard Dockerfile Converter",
+      "properties": {
+        "chainguard.org": {
+          "type": "string",
+          "default": "chainguard",
+          "description": "Organization name for Chainguard registry (use 'chainguard' for free tier)"
+        },
+        "chainguard.customMappings": {
+          "type": "string",
+          "default": "",
+          "description": "Path to custom mappings YAML file"
+        },
+        "chainguard.enableDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline diagnostics for non-Chainguard images"
+        },
+        "chainguard.enableCVEScanning": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable live CVE scanning with grype (requires grype to be installed)"
+        },
+        "chainguard.enableLivePackageVerification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Verify packages against live Wolfi repository"
+        },
+        "chainguard.enableCrystalBall": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Crystal Ball intelligent image matching with coverage scoring (requires crystal-ball database)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./ && npm run copy-mappings",
+    "copy-mappings": "mkdir -p out/mappings && cp src/mappings/builtin-mappings.yaml out/mappings/",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "node test-convert.js"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.5",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "dockerfile-ast": "^0.6.1",
+    "js-yaml": "^4.1.0",
+    "node-fetch": "^3.3.2"
+  }
+}

@@ -1,0 +1,25 @@
+# Build outputs
+out
+node_modules
+.vscode-test/
+*.vsix
+
+# OS files
+.DS_Store
+
+# Claude Code context
+.claude/
+
+# Crystal Ball (separate git repo - should not be committed)
+crystal-ball/
+
+# Test files (optional - you may want to keep these)
+test-*.js
+test-*.sh
+
+# IDE
+.vscode/
+
+# Environment files (if any)
+.env
+.env.local

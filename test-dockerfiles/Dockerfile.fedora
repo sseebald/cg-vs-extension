@@ -1,0 +1,13 @@
+FROM fedora:latest
+
+RUN dnf -y update && dnf clean all && \
+    dnf -y install python3-pip postgresql && \
+    dnf clean all
+
+WORKDIR /app
+
+COPY . .
+
+RUN pip install -r requirements.txt
+
+CMD ["python3", "app.py"]
