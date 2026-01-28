@@ -61,13 +61,75 @@ Access settings via VS Code preferences (`Cmd+,`):
 ### Settings
 
 - **chainguard.org** (default: `chainguard`)
-  Organization name for Chainguard registry. Use `chainguard` for free tier images.
+  Organization name for Chainguard registry. Use `chainguard` for free tier images, or `chainguard-private` for authenticated access.
 
 - **chainguard.customMappings** (default: `""`)
   Path to custom YAML mappings file for specialized image/package conversions.
 
 - **chainguard.enableDiagnostics** (default: `true`)
   Enable/disable inline diagnostics for non-Chainguard images.
+
+- **chainguard.enableCVEScanning** (default: `true`)
+  Enable live CVE scanning with grype to show before/after vulnerability comparison.
+
+- **chainguard.enableLivePackageVerification** (default: `true`)
+  Verify packages against live Wolfi repository (packages.wolfi.dev).
+
+- **chainguard.enableCrystalBall** (default: `true`)
+  Enable Crystal Ball intelligent image matching with coverage scoring (requires setup).
+
+## Authentication Setup
+
+For authenticated access to Chainguard images and CVE scanning:
+
+### 1. Authenticate with Chainguard
+
+```bash
+# Install chainctl
+brew install chainguard-dev/tap/chainctl
+
+# Login to Chainguard
+chainctl auth login
+
+# Verify authentication
+chainctl auth status
+```
+
+### 2. Configure Extension for Private Registry
+
+In VS Code Settings (Cmd+,), search for "chainguard org" and change from `chainguard` to `chainguard-private`:
+
+```json
+{
+  "chainguard.org": "chainguard-private"
+}
+```
+
+Or use VS Code Settings UI:
+1. Open Settings (Cmd+,)
+2. Search for "chainguard org"
+3. Change value to `chainguard-private`
+
+### 3. Reload VS Code
+
+After authenticating and changing the setting, reload the VS Code window for changes to take effect.
+
+### When Authentication is Required
+
+**CVE Scanning:** Requires authentication to scan Chainguard images with grype. Without auth, you'll see:
+```
+- Current: ❌ 47 CVEs
+- Chainguard: 🔐 Auth required (run `chainctl auth login`)
+```
+
+**Conversion:** Works without authentication - the extension will still show you the correct Chainguard image names and convert your Dockerfile. You just won't see CVE comparisons until authenticated.
+
+### Free Tier vs Private Registry
+
+- **`chainguard.org: "chainguard"`** - Free tier images (public, no auth required for some images)
+- **`chainguard.org: "chainguard-private"`** - Private registry (requires authentication, full image access)
+
+Most Chainguard users should use `chainguard-private` for full access to all images and features.
 
 ## How It Works
 
