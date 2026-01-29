@@ -31,6 +31,10 @@
       {
         "command": "chainguard.showConversionPreview",
         "title": "Chainguard: Show Conversion Preview"
+      },
+      {
+        "command": "chainguard.convertDockerfileToNewFile",
+        "title": "Chainguard: Save Conversion as New File"
       }
     ],
     "configuration": {

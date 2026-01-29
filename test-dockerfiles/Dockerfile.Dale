@@ -1,0 +1,241 @@
+ARG PLATFORM_ARCH
+################################################################################################################
+## CA CERTIFICATE
+################################################################################################################
+FROM python:3.11.4-slim-bookworm AS cert
+# Install ca-certificates
+RUN apt update && apt upgrade -y && apt install -y ca-certificates
+# Copy certificates to a shared directory
+RUN mkdir /certs && cp -R /etc/ssl/certs/* /certs/
+################################################################################################################
+## JTRBASE BUILD
+################################################################################################################
+FROM 552936520451.dkr.ecr.us-east-1.amazonaws.com/jtrbase:${PLATFORM_ARCH}-1.0.6 as jtrbase
+################################################################################################################
+## EXTERNAL PACKAGES
+################################################################################################################
+FROM python:3.11.4-slim-bookworm AS external_packages
+WORKDIR /app
+RUN apt update && apt install -y curl unzip wget ca-certificates xz-utils
+## kubectl
+RUN KUBE_LATEST_VERSION="v1.31.9" && \
+    ARCH=$(python -c "import platform; is_x86 = platform.machine() in ('i386', 'i686', 'AMD64', 'x86_64'); print('amd64' if is_x86 else 'arm64')") && \
+    UNAME=$(uname -s | tr '[:upper:]' '[:lower:]') && \
+    curl -LO "https://dl.k8s.io/${KUBE_LATEST_VERSION}/kubernetes-client-${UNAME}-${ARCH}.tar.gz" && \
+    tar -xvf kubernetes-client-${UNAME}-${ARCH}.tar.gz && \
+    cp kubernetes/client/bin/kubectl /usr/local/bin && chmod +x /usr/local/bin/kubectl
+## helm
+RUN HELM_VERSION="v3.15.4" &&  \
+    ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; elif [ "$ARCH" = "aarch64" ]; then ARCH="arm64"; fi && \
+    curl "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" -o - | tar -xzO "linux-${ARCH}/helm" > "/usr/local/bin/helm" && \
+    chmod +x /usr/local/bin/helm
+## aws-iam-authenticator
+RUN AWS_IAM_AUTH_VERSION="1.19.6/2021-01-05" && \
+    curl -o /usr/local/bin/aws-iam-authenticator https://amazon-eks.s3.us-west-2.amazonaws.com/${AWS_IAM_AUTH_VERSION}/bin/linux/amd64/aws-iam-authenticator && \
+    ARCH=$(python -c "import platform; is_x86 = platform.machine() in ('i386', 'i686', 'AMD64', 'x86_64'); print('amd64' if is_x86 else 'arm64')") && \
+    UNAME=$(uname -s | tr '[:upper:]' '[:lower:]') && \
+    curl -o /usr/local/bin/aws-iam-authenticator https://amazon-eks.s3.us-west-2.amazonaws.com/${AWS_IAM_AUTH_VERSION}/bin/${UNAME}/${ARCH}/aws-iam-authenticator && \
+    chmod a+rx /usr/local/bin/aws-iam-authenticator
+## envsubst
+RUN ENVSUBST_VERSION="v1.4.2" && \
+    UNAME="$(uname -s)" && \
+    ENVSUBST_ARCH=$(python -c "import platform; print('x86_64' if platform.machine() in ('i386', 'i686', 'AMD64', 'x86_64') else 'arm64')") && \
+    curl -L "https://github.com/a8m/envsubst/releases/download/${ENVSUBST_VERSION}/envsubst-${UNAME}-${ENVSUBST_ARCH}" -o "/usr/local/bin/envsubst" && \
+    chmod a+rx /usr/local/bin/envsubst
+## upx (for docker)
+RUN UPX_VERION="4.1.0" && \
+    ARCH=$(python -c "import platform; is_x86 = platform.machine() in ('i386', 'i686', 'AMD64', 'x86_64'); print('amd64' if is_x86 else 'arm64')") && \
+    UNAME=$(uname -s | tr '[:upper:]' '[:lower:]') && \
+    curl -LO https://github.com/upx/upx/releases/download/v${UPX_VERION}/upx-${UPX_VERION}-${ARCH}_${UNAME}.tar.xz && \
+    tar -xvf upx-${UPX_VERION}-${ARCH}_${UNAME}.tar.xz && \
+    cp upx-${UPX_VERION}-${ARCH}_${UNAME}/upx /usr/local/bin && chmod +x /usr/local/bin/upx
+## docker
+RUN DOCKER_VERSION="27.1.2" && \
+    LINUX_ARCH=$(python -c "import platform; print('x86_64' if platform.machine() == 'amd64' else ('aarch64' if platform.machine() == 'arm64' else platform.machine()))") && \
+    curl -L -o docker-pkg.tgz https://download.docker.com/linux/static/stable/${LINUX_ARCH}/docker-${DOCKER_VERSION}.tgz && \
+    tar -xf docker-pkg.tgz -C /usr/bin/ docker/docker --strip-components=1 && \
+    upx /usr/bin/docker
+## clean
+RUN apt purge -y curl unzip wget xz-utils && apt autoremove -y && apt -y clean && \
+    rm -rf /app/* /tmp/* /root/.cache /var/lib/apt/lists/*
+################################################################################################################
+## ORCA PYTHON BASE
+################################################################################################################
+FROM python:3.11.4-slim-bookworm AS orca_python_base
+ENV FORCE_UNSAFE_CONFIGURE=1
+ENV LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib:$LD_LIBRARY_PATH
+ENV NPROCS=4
+# Install basic OS packages
+RUN apt update && \
+    apt upgrade -y && \
+    DEBIAN_FRONTEND=noninteractive apt install -y \
+    lsb-release \
+    curl \
+    unzip \
+    gnupg2 \
+    pkg-config
+## install openssl
+RUN OPENSSL_VERSION="3.1.4" && \
+    apt install -y make build-essential && \
+    cd /tmp/ && curl -LO https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz && \
+    tar -xf openssl-${OPENSSL_VERSION}.tar.gz && cd openssl-${OPENSSL_VERSION} && \
+    ./config --prefix=/usr/local && make -j${NPROCS} && make install && ldconfig && \
+    rm -rf /tmp/openssl-${OPENSSL_VERSION}*
+## install openssh
+RUN OPENSSH_VERSION="9.4p1" && OPENSSL_PATH="/usr/local" && \
+    apt install -y zlib1g-dev && \
+    cd /tmp/ && curl -LO https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VERSION}.tar.gz && \
+    tar -xzvf openssh-${OPENSSH_VERSION}.tar.gz && cd openssh-${OPENSSH_VERSION} && \
+    ./configure --with-openssl=${OPENSSL_PATH} && make -j${NPROCS} && make install && \
+    ln -s /usr/local/sbin/sshd /usr/sbin/sshd && \
+    useradd -r -M -d /var/empty -s /sbin/nologin sshd && \
+    rm -rf /tmp/openssh-${OPENSSH_VERSION}*
+## install wget
+RUN WGET_VERSION="1.21" && \
+    apt install -y build-essential libgnutls28-dev && \
+    cd /tmp/ && curl -LO https://ftp.gnu.org/gnu/wget/wget-${WGET_VERSION}.tar.gz && \
+    tar -xf wget-${WGET_VERSION}.tar.gz && cd wget-${WGET_VERSION} && \
+    ./configure --prefix=/usr/local && make -j${NPROCS} && make install
+## install git
+RUN GIT_VERSION="2.42.0" && \
+    apt install -y zlib1g-dev gettext libcurl4-openssl-dev && \
+    cd /tmp/ && curl -LO https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VERSION}.tar.gz && \
+    tar -zxvf git-${GIT_VERSION}.tar.gz && cd git-${GIT_VERSION} && \
+    ./configure --with-git-submodules --with-openssl && make NO_INSTALL_HARDLINKS=YesPlease INSTALL_SYMLINKS=YesPlease -j${NPROCS} prefix=/usr/local all install && \
+    git config --system --add safe.directory '*'
+## install git-lfs
+RUN GIT_LFS_VERSION="3.5.1" && \
+    GIT_ARCH=$(python -c "import platform; is_x86 = platform.machine() in ('i386', 'i686', 'AMD64', 'x86_64'); print('amd64' if is_x86 else 'arm64')") && \
+    UNAME=$(uname -s | tr '[:upper:]' '[:lower:]') && \
+    cd /tmp/ && curl -LO https://github.com/git-lfs/git-lfs/releases/download/v${GIT_LFS_VERSION}/git-lfs-${UNAME}-${GIT_ARCH}-v${GIT_LFS_VERSION}.tar.gz && \
+    tar -zxvf git-lfs-${UNAME}-${GIT_ARCH}-v${GIT_LFS_VERSION}.tar.gz && cd git-lfs-${GIT_LFS_VERSION} && \
+    ./install.sh && git lfs install
+## install git-secrets
+RUN cd /tmp/ && git clone https://github.com/sobolevn/git-secret.git git-secret && cd git-secret && \
+    make build && PREFIX="/usr/local" make install
+## Install vim
+RUN apt install -y libncurses-dev && \
+    cd /tmp/ && curl -LO https://github.com/vim/vim/archive/master.tar.gz && \
+    tar -xvf master.tar.gz && cd vim-master &&  \
+    ./configure --prefix=/usr/local && make -j${NPROCS} && make install && \
+    ln -s /usr/local/bin/vim /usr/local/bin/vi
+## install awscli v2
+RUN AWS_CLI_VERSION="2.15.17" && \
+    LINUX_ARCH=$(python -c "import platform; print('x86_64' if platform.machine() == 'amd64' else ('aarch64' if platform.machine() == 'arm64' else platform.machine()))") && \
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-${LINUX_ARCH}-${AWS_CLI_VERSION}.zip" -o "awscliv2.zip" && \
+    unzip awscliv2.zip && \
+    ./aws/install && \
+    rm -rf aws awscliv2.zip
+## install sqlite3
+RUN SQLITE_VERSION="3430100" && \
+    cd /tmp/ && curl -LO https://www.sqlite.org/2023/sqlite-autoconf-${SQLITE_VERSION}.tar.gz && \
+    tar -xvf sqlite-autoconf-${SQLITE_VERSION}.tar.gz && cd sqlite-autoconf-${SQLITE_VERSION} && \
+    ./configure --prefix=/usr/local && make -j${NPROCS} && make install
+## install nodejs v20 (Required for AliCloud ROS CDK (for policy generation) https://github.com/orcasecurity/orca/blob/master/lib/orca/cloud_provider/alicloud/ros_permissions.py)
+RUN NODEJS_VERSION="20.18.0" && \
+    NODEJS_ARCH=$(python -c "import platform; is_x86 = platform.machine() in ('i386', 'i686', 'AMD64', 'x86_64'); print('x64' if is_x86 else 'arm64')") && \
+    cd /tmp/ && curl -LO https://nodejs.org/dist/v${NODEJS_VERSION}/node-v${NODEJS_VERSION}-linux-${NODEJS_ARCH}.tar.xz && \
+    tar -xf node-v${NODEJS_VERSION}-linux-${NODEJS_ARCH}.tar.xz && \
+    cp -R node-v${NODEJS_VERSION}-linux-${NODEJS_ARCH}/* /usr/local/ && \
+    rm -rf node-v${NODEJS_VERSION}-linux-${NODEJS_ARCH}*
+# Adding repo for postgres
+RUN curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add -
+RUN echo "deb http://apt.postgresql.org/pub/repos/apt/ `lsb_release -cs`-pgdg main" | tee  /etc/apt/sources.list.d/pgdg.list
+# Removing packages used to compile sources and install packages used for applications
+RUN apt purge -y build-essential libgnutls28-dev zlib1g-dev gettext libncurses-dev libcurl4-openssl-dev zlib1g-dev && \
+    apt autoremove -y && \
+    apt -y clean && \
+    rm -rf /tmp/* /root/.cache /var/lib/apt/lists/* && \
+    dpkg --add-architecture arm64 && \
+    apt update && apt upgrade -y && \
+    DEBIAN_FRONTEND=noninteractive apt install -y \
+    libc6:arm64 \
+    gawk \
+    antiword \
+    autoconf \
+    automake \
+    binutils \
+    make \
+    cmake \
+    file \
+    g++ \
+    gcc \
+    htop \
+    jq \
+    libantlr4-runtime-dev \
+    libffi-dev \
+    libgomp1 \
+    #----------------------------- \
+    libpq-dev \
+    librdkafka-dev \
+    libre2-dev \
+    libssl-dev \
+    libtool \
+    libxml2-dev \
+    libxmlsec1 \
+    libxslt-dev \
+    libyajl-dev \
+    locales \
+    openssh-client \
+    postgresql-client-14 \
+    procps \
+    putty \
+    tmux \
+    unixodbc-dev \
+    util-linux \
+    xmlsec1 \
+    zsh \
+    gnupg \
+    dislocker \
+    p7zip-full \
+    libsnappy-dev \
+    whois \
+    # Used by the Collector, specifically by windows CIS
+    reglookup \
+    ninja-build && \
+    # July 29, 2024 Patching CVEs
+    apt purge -y --auto-remove && \
+    apt autoremove -y && \
+    apt -y clean && \
+    rm -rf /tmp/* /root/.cache /var/lib/apt/lists/*
+## Add oh-my-zsh
+RUN sh -c "$(wget -O- https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended && \
+    sed -i 's~^root:\(.*:/bin/\).*$~root:\1zsh~' /etc/passwd
+COPY orca-gnzh.zsh-theme /root/.oh-my-zsh/themes/orca-gnzh.zsh-theme
+## Entry point code for SSH (For local development) - OpenSSH Server
+RUN echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen && \
+    locale-gen && \
+    echo "LANG=en_US.UTF-8" >> /etc/default/locale && \
+    ssh-keygen -A && \
+    mkdir -p /run/sshd && \
+    sed -i 's/AllowTcpForwarding no/AllowTcpForwarding yes/' /usr/local/etc/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /usr/local/etc/sshd_config
+# Debug info from the non-slim image
+FROM python:3.11.4-bookworm AS debuginfo
+################################################################################################################
+## FINAL STAGE
+################################################################################################################
+FROM scratch
+ENV LD_LIBRARY_PATH=/usr/local/lib64:/usr/local/lib:$LD_LIBRARY_PATH
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+## Copy everything from orca python base
+COPY --from=orca_python_base / /
+## Copy jtrbase
+COPY --from=jtrbase /jtr/run /jtr/run
+## Copy external packages (binaries only)
+COPY --from=external_packages /usr/local/bin/upx /usr/local/bin/upx
+COPY --from=external_packages /usr/bin/docker /usr/bin/docker
+COPY --from=external_packages /usr/local/bin/envsubst /usr/local/bin/envsubst
+COPY --from=external_packages /usr/local/bin/helm /usr/local/bin/helm
+COPY --from=external_packages /usr/local/bin/kubectl /usr/local/bin/kubectl
+# Copy certificates from the build stage
+COPY --from=cert /certs /etc/ssl/certs/
+# Copy debug info from the debuginfo stage, this is needed for profiling in production
+COPY --from=debuginfo /usr/local/lib/libpython3.11.so.1.0 /usr/local/lib/libpython3.11.so.1.0
+# Copy bfs-ssl.pem and Append this file into ca-certificates.crt
+RUN mkdir /usr/local/share/ca-certificates/share
+COPY bfs-ssl /usr/local/share/ca-certificates/share/bfs-ssl.crt
+RUN update-ca-certificates
+# Add env var to avoid SSL error
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt

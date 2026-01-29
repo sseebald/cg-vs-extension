@@ -113,6 +113,74 @@ export function activate(context: vscode.ExtensionContext) {
       await showDiffPreview(editor.document, result.converted);
     })
   );
+
+  // Command: Save conversion as new file
+  context.subscriptions.push(
+    vscode.commands.registerCommand('chainguard.convertDockerfileToNewFile', async (document?: vscode.TextDocument) => {
+      const editor = vscode.window.activeTextEditor;
+      const doc = document || editor?.document;
+
+      if (!doc) {
+        vscode.window.showErrorMessage('No Dockerfile open');
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('chainguard');
+      const org = config.get<string>('org', 'chainguard');
+      const converter = new DockerfileConverter({ org });
+      const result = converter.convert(doc.getText());
+
+      if (result.changes.length === 0) {
+        vscode.window.showInformationMessage('This Dockerfile is already using Chainguard images!');
+        return;
+      }
+
+      // Suggest a filename based on the original
+      const originalPath = doc.uri;
+      const originalName = originalPath.path.split('/').pop() || 'Dockerfile';
+      const suggestedName = originalName === 'Dockerfile'
+        ? 'Dockerfile.chainguard'
+        : `${originalName}.chainguard`;
+
+      // Prompt user for filename
+      const newFileName = await vscode.window.showInputBox({
+        prompt: 'Enter filename for converted Dockerfile',
+        value: suggestedName,
+        placeHolder: 'Dockerfile.chainguard'
+      });
+
+      if (!newFileName) {
+        return; // User cancelled
+      }
+
+      // Create new file path
+      const directory = originalPath.path.substring(0, originalPath.path.lastIndexOf('/'));
+      const newFilePath = vscode.Uri.file(`${directory}/${newFileName}`);
+
+      try {
+        // Write the converted content to the new file
+        const encoder = new TextEncoder();
+        await vscode.workspace.fs.writeFile(newFilePath, encoder.encode(result.converted));
+
+        // Show success message with option to open
+        const choice = await vscode.window.showInformationMessage(
+          `✅ Converted Dockerfile saved to ${newFileName}`,
+          'Open File',
+          'Show Diff'
+        );
+
+        if (choice === 'Open File') {
+          const newDoc = await vscode.workspace.openTextDocument(newFilePath);
+          await vscode.window.showTextDocument(newDoc);
+        } else if (choice === 'Show Diff') {
+          const newDoc = await vscode.workspace.openTextDocument(newFilePath);
+          await vscode.commands.executeCommand('vscode.diff', doc.uri, newDoc.uri, `Original vs ${newFileName}`);
+        }
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Failed to save file: ${error.message}`);
+      }
+    })
+  );
 }
 
 async function showDiffPreview(originalDoc: vscode.TextDocument, convertedContent: string) {

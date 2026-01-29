@@ -43,8 +43,9 @@ Hover over any FROM line to see:
 
 ### Commands
 
-- `Chainguard: Convert Dockerfile` - Convert the entire active Dockerfile
+- `Chainguard: Convert Dockerfile` - Convert the entire active Dockerfile (overwrites original)
 - `Chainguard: Show Conversion Preview` - Preview changes before applying
+- `Chainguard: Save Conversion as New File` - Save converted Dockerfile as new file (preserves original)
 
 ## Configuration
 
