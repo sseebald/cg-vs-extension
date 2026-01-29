@@ -23,7 +23,7 @@ export interface Change {
   line: number;
   old: string;
   new: string;
-  type: 'from' | 'run' | 'user';
+  type: 'from' | 'run' | 'user' | 'user-reset';
 }
 
 export interface ConversionOptions {

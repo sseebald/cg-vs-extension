@@ -53,31 +53,7 @@ export class HoverProvider implements vscode.HoverProvider {
     if (lineText.toUpperCase().startsWith('RUN') &&
         (lineText.includes('apt-get') || lineText.includes('apt install') ||
          lineText.includes('dnf') || lineText.includes('yum') || lineText.includes('microdnf'))) {
-      // Read multi-line command if it has backslash continuations
-      const { fullCommand } = this.readMultilineCommand(document, position.line);
-      const result = converter.convert(fullCommand);
-      const change = result.changes.find(c => c.type === 'run' && c.line === 0);
-
-      if (!change || change.old === change.new) {
-        return;
-      }
-
-      const markdown = new vscode.MarkdownString();
-      markdown.isTrusted = true;
-      markdown.supportHtml = true;
-
-      markdown.appendMarkdown('### Chainguard Package Conversion\n\n');
-      markdown.appendMarkdown('Chainguard images use **Wolfi** (Alpine-based) package manager.\n\n');
-      markdown.appendMarkdown('**Converted command:**\n\n');
-      markdown.appendCodeblock(change.new, 'bash');
-      markdown.appendMarkdown('\n---\n\n');
-      markdown.appendMarkdown('**Why apk?**\n\n');
-      markdown.appendMarkdown('- Wolfi OS uses Alpine package manager (apk)\n');
-      markdown.appendMarkdown('- Packages are automatically mapped (600+ mappings)\n');
-      markdown.appendMarkdown('- Smaller, faster, more secure than apt/dnf\n\n');
-      markdown.appendMarkdown('[Learn more about Wolfi](https://edu.chainguard.dev/open-source/wolfi/overview/)');
-
-      return new vscode.Hover(markdown, line.range);
+      return this.handlePackageManagerHover(document, position, line, converter);
     }
 
     // Handle useradd/groupadd lines
@@ -131,6 +107,30 @@ export class HoverProvider implements vscode.HoverProvider {
 
     markdown.appendMarkdown('### Chainguard Equivalent\n\n');
     markdown.appendCodeblock(change.new, 'dockerfile');
+
+    // Add best practices guidance
+    markdown.appendMarkdown('\n---\n\n');
+    markdown.appendMarkdown('### 📋 Best Practices\n\n');
+
+    // Check if this is a -dev variant
+    const isDevVariant = change.new.includes('-dev');
+
+    if (isDevVariant) {
+      markdown.appendMarkdown('**Multi-stage builds recommended:**\n');
+      markdown.appendCodeblock(
+        '# Build stage (has apk, shell, build tools)\nFROM ' + change.new.split('\n')[0].replace('FROM ', '') + ' AS builder\nRUN apk add --no-cache build-base\n# ... build steps\n\n# Runtime stage (distroless - no shell/apk)\nFROM ' + change.new.split('\n')[0].replace('FROM ', '').replace('-dev', '') + '\nCOPY --from=builder /app /app',
+        'dockerfile'
+      );
+      markdown.appendMarkdown('\n**Why distroless for runtime?**\n');
+      markdown.appendMarkdown('- Smaller attack surface (no shell, no package manager)\n');
+      markdown.appendMarkdown('- Fewer CVEs (minimal components)\n');
+      markdown.appendMarkdown('- Best practice for production deployments\n');
+    } else {
+      markdown.appendMarkdown('✅ Using **distroless** image (no shell/package manager)\n\n');
+      markdown.appendMarkdown('- Minimal attack surface\n');
+      markdown.appendMarkdown('- Best for production runtime\n');
+      markdown.appendMarkdown('- For build steps, use `-dev` variant instead\n');
+    }
 
     // Try crystal-ball for enhanced recommendations
     const enableCrystalBall = config.get('enableCrystalBall', true);
@@ -268,6 +268,80 @@ export class HoverProvider implements vscode.HoverProvider {
     markdown.appendMarkdown('- 📋 Built-in SBOM & signatures\n');
     markdown.appendMarkdown('- 🏢 Commercial support available\n\n');
     markdown.appendMarkdown('[Learn more about Chainguard Images](https://edu.chainguard.dev/chainguard/chainguard-images/overview/)');
+
+    return new vscode.Hover(markdown, line.range);
+  }
+
+  private async handlePackageManagerHover(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    line: vscode.TextLine,
+    converter: DockerfileConverter
+  ): Promise<vscode.Hover | undefined> {
+    // Read multi-line command if it has backslash continuations
+    const { fullCommand } = this.readMultilineCommand(document, position.line);
+    const result = converter.convert(fullCommand);
+    const change = result.changes.find(c => c.type === 'run' && c.line === 0);
+
+    if (!change || change.old === change.new) {
+      return;
+    }
+
+    const markdown = new vscode.MarkdownString();
+    markdown.isTrusted = true;
+    markdown.supportHtml = true;
+
+    markdown.appendMarkdown('### Chainguard Package Conversion\n\n');
+    markdown.appendMarkdown('Chainguard images use **Wolfi** (glibc-based) package manager.\n\n');
+    markdown.appendMarkdown('**Converted command:**\n\n');
+    markdown.appendCodeblock(change.new, 'bash');
+    markdown.appendMarkdown('\n---\n\n');
+    markdown.appendMarkdown('**Why apk?**\n\n');
+    markdown.appendMarkdown('- Wolfi OS uses apk package manager\n');
+    markdown.appendMarkdown('- Packages are automatically mapped (600+ mappings)\n');
+    markdown.appendMarkdown('- Uses **glibc** (faster than Alpine\'s musl)\n');
+    markdown.appendMarkdown('- `--no-cache` flag reduces image size\n\n');
+    markdown.appendMarkdown('💡 **Tip:** Package installs require `USER root` in Chainguard images (default user is `nonroot`)\n\n');
+
+    // Extract packages from converted command
+    const packageMatch = change.new.match(/apk add --no-cache (.+)/);
+    if (packageMatch) {
+      const packages = packageMatch[1].trim().split(/\s+/);
+
+      // Check if package verification is enabled
+      const config = vscode.workspace.getConfiguration('chainguard');
+      const enableVerification = config.get('enableLivePackageVerification', true);
+
+      if (enableVerification && packages.length > 0) {
+        markdown.appendMarkdown('---\n\n');
+        markdown.appendMarkdown('**📦 Package Verification:**\n\n');
+
+        // Verify packages exist in Wolfi (show first few)
+        const packagesToCheck = packages.slice(0, 3);
+        let hasWarning = false;
+
+        for (const pkg of packagesToCheck) {
+          const verification = await verifyPackageMapping(pkg, pkg);
+          if (!verification.exists) {
+            hasWarning = true;
+            markdown.appendMarkdown(`⚠️ \`${pkg}\` not found in Wolfi repository\n`);
+            if (verification.alternatives && verification.alternatives.length > 0) {
+              markdown.appendMarkdown(`   Suggestions: ${verification.alternatives.map(a => `\`${a.name}\``).join(', ')}\n`);
+            }
+          }
+        }
+
+        if (hasWarning) {
+          markdown.appendMarkdown('\n💡 Search for packages: [APK Explorer](https://apk.dag.dev/) | [packages.wolfi.dev](https://packages.wolfi.dev/)\n');
+        }
+
+        if (packages.length > 3) {
+          markdown.appendMarkdown(`\n*(Showing ${packagesToCheck.length} of ${packages.length} packages)*\n`);
+        }
+      }
+    }
+
+    markdown.appendMarkdown('\n[Learn more about Wolfi](https://edu.chainguard.dev/open-source/wolfi/overview/)');
 
     return new vscode.Hover(markdown, line.range);
   }

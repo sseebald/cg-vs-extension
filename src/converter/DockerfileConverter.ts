@@ -73,6 +73,12 @@ export class DockerfileConverter {
           changes.push({ line: i, old: fullCommand, new: result.converted, type: 'run' });
         }
 
+        // Reset to nonroot after package install (Chainguard security best practice)
+        if (result.needsRoot && needsUserRoot) {
+          converted.push('USER nonroot');
+          changes.push({ line: i + lineCount, old: '', new: 'USER nonroot', type: 'user-reset' });
+        }
+
         // Skip the continuation lines we already processed
         i += lineCount - 1;
         continue;
