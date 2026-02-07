@@ -8,6 +8,10 @@ import { DockerfileConverter } from '../converter/DockerfileConverter';
 import { scanImage, getCachedScan, formatCVECount, compareCVEs } from '../scanner/grype-scanner';
 import { verifyPackageMapping } from '../mappings/package-search';
 import { getCrystalBallClient } from '../extension';
+import { ChainctlClient } from '../services/chainctl-client';
+import { parseDependencyFile } from '../parsers/dependency-parser';
+import { checkRemediationAvailability } from '../services/vex-feed-client';
+import * as fs from 'fs';
 
 export class HoverProvider implements vscode.HoverProvider {
   private static statusBarItem: vscode.StatusBarItem | undefined;
@@ -79,6 +83,18 @@ export class HoverProvider implements vscode.HoverProvider {
       markdown.appendMarkdown('\n[Learn more about Chainguard user management](https://edu.chainguard.dev/chainguard/chainguard-images/getting-started/users-and-groups/)');
 
       return new vscode.Hover(markdown, line.range);
+    }
+
+    // Handle COPY commands with dependency files
+    if (lineText.toUpperCase().startsWith('COPY') &&
+        /requirements.*\.txt|package\.json|pom\.xml|build\.gradle/.test(lineText)) {
+      return this.handleDependencyFileHover(document, position, line, converter, config);
+    }
+
+    // Handle RUN commands with package installation
+    if (lineText.toUpperCase().startsWith('RUN') &&
+        /pip3?\s+install|npm\s+(install|ci)|yarn\s+(install|add)|mvn\s+|gradle\s+/.test(lineText)) {
+      return this.handleDependencyInstallHover(document, position, line, converter, config);
     }
 
     return;
@@ -342,6 +358,269 @@ export class HoverProvider implements vscode.HoverProvider {
     }
 
     markdown.appendMarkdown('\n[Learn more about Wolfi](https://edu.chainguard.dev/open-source/wolfi/overview/)');
+
+    return new vscode.Hover(markdown, line.range);
+  }
+
+  private async handleDependencyFileHover(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    line: vscode.TextLine,
+    converter: DockerfileConverter,
+    config: vscode.WorkspaceConfiguration
+  ): Promise<vscode.Hover | undefined> {
+    const enableLibraryDetection = config.get('enableLibraryDetection', false);
+
+    if (!enableLibraryDetection) {
+      return undefined;
+    }
+
+    const markdown = new vscode.MarkdownString();
+    markdown.isTrusted = true;
+    markdown.supportHtml = true;
+
+    markdown.appendMarkdown('## Chainguard Libraries\n\n');
+
+    // Detect dependency file
+    const depFiles = converter.extractDependencyFiles(
+      document.getText(),
+      document.uri.fsPath
+    );
+
+    const depFile = depFiles.find(f => f.line === position.line);
+    if (!depFile) {
+      return undefined;
+    }
+
+    markdown.appendMarkdown(`**Detected**: ${depFile.ecosystem.toUpperCase()} dependency file\n\n`);
+
+    // Check chainctl availability
+    const hasChainctl = await ChainctlClient.isInstalled();
+    const isAuthenticated = hasChainctl ? await ChainctlClient.isAuthenticated() : false;
+
+    if (!hasChainctl) {
+      markdown.appendMarkdown('⚠️ **`chainctl` not installed**\n\n');
+      markdown.appendMarkdown('Install with:\n');
+      markdown.appendCodeblock('brew install chainguard-dev/tap/chainctl', 'bash');
+      markdown.appendMarkdown('\nChainguard Libraries provide:\n');
+      markdown.appendMarkdown('- Supply-chain-secured packages built from source\n');
+      markdown.appendMarkdown('- CVE-remediated versions with backported fixes\n');
+      markdown.appendMarkdown('- VEX attestations for scanner integration\n\n');
+      markdown.appendMarkdown('[Learn more](https://edu.chainguard.dev/chainguard/libraries/)\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    if (!isAuthenticated) {
+      markdown.appendMarkdown('🔐 **Authentication required**\n\n');
+      markdown.appendMarkdown('Run:\n');
+      markdown.appendCodeblock('chainctl auth login', 'bash');
+      markdown.appendMarkdown('\nAuthentication is required to access `libraries.cgr.dev`\n\n');
+      markdown.appendMarkdown('[Learn more about authentication](https://edu.chainguard.dev/chainguard/libraries/)\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    // Get entitlements - use libraryOrg config if set, otherwise show config prompt
+    const libraryOrg = config.get<string>('libraryOrg', '');
+
+    if (!libraryOrg) {
+      markdown.appendMarkdown(`⚠️ **Organization not configured**\n\n`);
+      markdown.appendMarkdown('Set your Chainguard organization for library entitlements:\n\n');
+      markdown.appendMarkdown('1. Open Settings: `Cmd+,`\n');
+      markdown.appendMarkdown('2. Search: `chainguard.libraryOrg`\n');
+      markdown.appendMarkdown('3. Set to your org (e.g., `sseebald.dev`)\n\n');
+      markdown.appendMarkdown('Or add to `settings.json`:\n');
+      markdown.appendCodeblock('"chainguard.libraryOrg": "your-org.dev"', 'json');
+      markdown.appendMarkdown('\n[Find your orgs](https://console.chainguard.dev)\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    const entitlements = await ChainctlClient.getEntitlements(libraryOrg);
+    const ecosystemKey = depFile.ecosystem.toUpperCase();
+
+    if (!entitlements.has(ecosystemKey)) {
+      markdown.appendMarkdown(`⚠️ **No ${ecosystemKey} entitlement**\n\n`);
+      markdown.appendMarkdown(`Organization \`${libraryOrg}\` does not have ${ecosystemKey} Libraries enabled.\n\n`);
+      if (entitlements.size > 0) {
+        markdown.appendMarkdown(`**Available ecosystems**: ${Array.from(entitlements).join(', ')}\n\n`);
+      } else {
+        markdown.appendMarkdown('Contact your Chainguard account owner to enable Libraries.\n\n');
+      }
+      markdown.appendMarkdown('[Learn more about entitlements](https://edu.chainguard.dev/chainguard/libraries/)\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    markdown.appendMarkdown(`✅ **${ecosystemKey} Libraries available**\n\n`);
+    markdown.appendMarkdown('---\n\n');
+
+    // Parse dependency file and show packages
+    if (!depFile.absolutePath || !fs.existsSync(depFile.absolutePath)) {
+      markdown.appendMarkdown(`⚠️ **Cannot find file**: \`${depFile.filePath}\`\n\n`);
+      markdown.appendMarkdown('Make sure the file exists in your workspace.\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    const packages = await parseDependencyFile(depFile.absolutePath, depFile.ecosystem);
+
+    if (packages.length === 0) {
+      markdown.appendMarkdown('No packages detected in dependency file.\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    markdown.appendMarkdown(`**Detected ${packages.length} package(s)**:\n\n`);
+
+    // Show first 5 packages
+    const preview = packages.slice(0, 5);
+    for (const pkg of preview) {
+      const versionStr = pkg.version ? `@${pkg.version}` : '';
+      markdown.appendMarkdown(`- \`${pkg.name}${versionStr}\`\n`);
+    }
+
+    if (packages.length > 5) {
+      markdown.appendMarkdown(`\n*...and ${packages.length - 5} more*\n`);
+    }
+
+    // Check CVE remediation status for first 3 packages
+    markdown.appendMarkdown('\n**CVE Remediation Status**:\n\n');
+
+    try {
+      const checkPromises = preview.slice(0, 3).map(pkg =>
+        checkRemediationAvailability(pkg.name, depFile.ecosystem)
+      );
+
+      const results = await Promise.all(checkPromises);
+
+      let hasRemediations = false;
+      for (let i = 0; i < preview.length && i < 3; i++) {
+        const pkg = preview[i];
+        const remediations = results[i];
+
+        if (remediations.length > 0) {
+          const totalCves = remediations.reduce((sum, r) => sum + r.cvesFixed.length, 0);
+          markdown.appendMarkdown(`- \`${pkg.name}\`: ✅ ${totalCves} CVE(s) remediated\n`);
+          hasRemediations = true;
+        } else {
+          markdown.appendMarkdown(`- \`${pkg.name}\`: Available from Chainguard\n`);
+        }
+      }
+
+      if (!hasRemediations && preview.length > 0) {
+        markdown.appendMarkdown('\n💡 All packages checked are available from Chainguard Libraries.\n');
+      }
+
+      if (packages.length > 3) {
+        markdown.appendMarkdown(`\n*CVE status shown for first 3 packages only*\n`);
+      }
+    } catch (error: any) {
+      console.warn('[Chainguard] Failed to check CVE remediation:', error.message);
+      markdown.appendMarkdown('⚠️ Unable to fetch CVE remediation data at this time.\n');
+    }
+
+    markdown.appendMarkdown('\n---\n\n');
+    markdown.appendMarkdown('**Next steps**:\n\n');
+    markdown.appendMarkdown(`1. Configure your ${depFile.ecosystem} package manager\n`);
+    markdown.appendMarkdown('2. Point to Chainguard Libraries registry\n');
+    markdown.appendMarkdown('3. Install dependencies as usual\n\n');
+    markdown.appendMarkdown('[Configuration guide →](https://edu.chainguard.dev/chainguard/libraries/)\n');
+
+    return new vscode.Hover(markdown, line.range);
+  }
+
+  private async handleDependencyInstallHover(
+    document: vscode.TextDocument,
+    position: vscode.Position,
+    line: vscode.TextLine,
+    converter: DockerfileConverter,
+    config: vscode.WorkspaceConfiguration
+  ): Promise<vscode.Hover | undefined> {
+    const enableLibraryDetection = config.get('enableLibraryDetection', false);
+
+    if (!enableLibraryDetection) {
+      return undefined;
+    }
+
+    const lineText = line.text.trim();
+    const markdown = new vscode.MarkdownString();
+    markdown.isTrusted = true;
+    markdown.supportHtml = true;
+
+    // Detect ecosystem
+    let ecosystem: string | null = null;
+    if (/pip3?\s+install/.test(lineText)) {
+      ecosystem = 'python';
+    } else if (/(npm|yarn)\s+(install|add|ci)/.test(lineText)) {
+      ecosystem = 'javascript';
+    } else if (/mvn\s+/.test(lineText)) {
+      ecosystem = 'java';
+    } else if (/gradle\s+/.test(lineText)) {
+      ecosystem = 'java';
+    }
+
+    if (!ecosystem) {
+      return undefined;
+    }
+
+    markdown.appendMarkdown('## Chainguard Libraries\n\n');
+    markdown.appendMarkdown(`**Installing ${ecosystem.toUpperCase()} packages**\n\n`);
+
+    // Find the corresponding dependency file
+    const depFiles = converter.extractDependencyFiles(
+      document.getText(),
+      document.uri.fsPath
+    );
+
+    const depFile = depFiles.find(f => f.ecosystem === ecosystem);
+
+    if (!depFile) {
+      markdown.appendMarkdown('💡 **Tip**: Copy a dependency file (requirements.txt, package.json, etc.) to enable package detection.\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    // Check authentication
+    const hasChainctl = await ChainctlClient.isInstalled();
+    const isAuthenticated = hasChainctl ? await ChainctlClient.isAuthenticated() : false;
+
+    if (!hasChainctl) {
+      markdown.appendMarkdown('⚠️ **`chainctl` not installed**\n\n');
+      markdown.appendMarkdown('[Install chainctl](https://edu.chainguard.dev/chainguard/libraries/) to check for CVE-remediated versions\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    if (!isAuthenticated) {
+      markdown.appendMarkdown('🔐 **Authentication required**\n\n');
+      markdown.appendMarkdown('Run: `chainctl auth login`\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    // Check library org config
+    const libraryOrg = config.get<string>('libraryOrg', '');
+    if (!libraryOrg) {
+      markdown.appendMarkdown('⚠️ **Set `chainguard.libraryOrg` in settings**\n');
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    const entitlements = await ChainctlClient.getEntitlements(libraryOrg);
+    if (!entitlements.has(ecosystem.toUpperCase())) {
+      markdown.appendMarkdown(`⚠️ No ${ecosystem.toUpperCase()} Libraries entitlement\n`);
+      return new vscode.Hover(markdown, line.range);
+    }
+
+    markdown.appendMarkdown(`✅ **${ecosystem.toUpperCase()} Libraries available**\n\n`);
+
+    // Parse and show packages
+    if (depFile.absolutePath && fs.existsSync(depFile.absolutePath)) {
+      const packages = await parseDependencyFile(depFile.absolutePath, ecosystem);
+
+      if (packages.length > 0) {
+        markdown.appendMarkdown(`📦 **${packages.length} packages** from \`${depFile.filePath}\`\n\n`);
+
+        // Show auto-convert option
+        markdown.appendMarkdown('---\n\n');
+        markdown.appendMarkdown('**💡 Actions:**\n\n');
+        markdown.appendMarkdown('- Click the lightbulb 💡 to **auto-convert to CVE-remediated versions**\n');
+        markdown.appendMarkdown('- Hover over the COPY line for detailed package info\n\n');
+        markdown.appendMarkdown('[Learn more](https://edu.chainguard.dev/chainguard/libraries/)\n');
+      }
+    }
 
     return new vscode.Hover(markdown, line.range);
   }

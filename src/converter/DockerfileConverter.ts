@@ -5,9 +5,10 @@
  * Enhanced with crystal-ball integration for intelligent image matching
  */
 
-import { MappingsConfig, ConversionResult, Change, ConversionOptions } from '../types';
+import { MappingsConfig, ConversionResult, Change, ConversionOptions, DependencyFile } from '../types';
 import { loadMappings } from '../mappings/loader';
 import { CrystalBallClient } from '../services/crystal-ball-client';
+import * as path from 'path';
 
 export class DockerfileConverter {
   private mappings: MappingsConfig;
@@ -333,6 +334,81 @@ export class DockerfileConverter {
       }
       return pkg; // Use original if no mapping
     });
+  }
+
+  /**
+   * Detect dependency files referenced in Dockerfile
+   * Looks for COPY commands with known dependency files
+   */
+  public extractDependencyFiles(content: string, dockerfilePath: string): DependencyFile[] {
+    const lines = content.split('\n');
+    const depFiles: DependencyFile[] = [];
+    const dockerfileDir = path.dirname(dockerfilePath);
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      // Skip comments
+      if (trimmed.startsWith('#')) {
+        continue;
+      }
+
+      // Match COPY commands: COPY requirements.txt /app/
+      // Pattern: COPY <src> <dest>
+      const copyMatch = trimmed.match(/^COPY\s+([^\s]+)/i);
+      if (!copyMatch) {
+        continue;
+      }
+
+      const sourcePath = copyMatch[1];
+
+      // Python: requirements.txt, requirements/*.txt
+      if (/requirements.*\.txt$/.test(sourcePath)) {
+        depFiles.push({
+          line: i,
+          ecosystem: 'python',
+          filePath: sourcePath,
+          absolutePath: path.resolve(dockerfileDir, sourcePath),
+          packages: [] // Will be populated when file is read
+        });
+      }
+
+      // JavaScript: package.json
+      if (/package\.json$/.test(sourcePath)) {
+        depFiles.push({
+          line: i,
+          ecosystem: 'javascript',
+          filePath: sourcePath,
+          absolutePath: path.resolve(dockerfileDir, sourcePath),
+          packages: []
+        });
+      }
+
+      // Java: pom.xml
+      if (/pom\.xml$/.test(sourcePath)) {
+        depFiles.push({
+          line: i,
+          ecosystem: 'java',
+          filePath: sourcePath,
+          absolutePath: path.resolve(dockerfileDir, sourcePath),
+          packages: []
+        });
+      }
+
+      // Java: build.gradle
+      if (/build\.gradle(\.kts)?$/.test(sourcePath)) {
+        depFiles.push({
+          line: i,
+          ecosystem: 'java',
+          filePath: sourcePath,
+          absolutePath: path.resolve(dockerfileDir, sourcePath),
+          packages: []
+        });
+      }
+    }
+
+    return depFiles;
   }
 
   /**

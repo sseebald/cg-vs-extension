@@ -1,0 +1,23 @@
+# Chainguard Image Requests
+# Add entries here and open a PR for approval
+#
+# Format:
+#   - name: <image-name>
+#     customName: <optional-custom-name>
+#     justification: "<reason-for-request>"
+#     requestedBy: <email>
+#     team: <team-name>
+#     environment: <production|staging|dev>
+#
+# Example:
+#   - name: python:latest-dev
+#     customName: python-ml-pipeline
+#     justification: "Required for ML training pipeline"
+#     requestedBy: alice@example.com
+#     team: data-engineering
+#     environment: production
+
+version: "1.0"
+
+images:
+  # Add your image requests below

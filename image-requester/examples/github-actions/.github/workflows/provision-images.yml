@@ -1,0 +1,93 @@
+name: Provision Images
+
+on:
+  push:
+    paths:
+      - 'requested-images.yaml'
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Get full history for diff
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install js-yaml axios
+
+      - name: Provision new images
+        id: provision
+        env:
+          CHAINGUARD_TOKEN: ${{ secrets.CHAINGUARD_TOKEN }}
+          CHAINGUARD_ORG_ID: ${{ secrets.CHAINGUARD_ORG_ID }}
+        run: |
+          node .github/scripts/provision.js
+
+      - name: Commit updated manifest
+        if: success()
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add requested-images.yaml
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update manifest with provision details [skip ci]"
+            git push
+          fi
+
+      - name: Find PR number
+        id: pr
+        run: |
+          # Extract PR number from commit message
+          PR_NUM=$(git log -1 --pretty=%B | grep -oP '#\K\d+' || echo "")
+          echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        if: always() && steps.pr.outputs.pr_number != ''
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('provision-results.json', 'utf8'));
+
+            let body = '## ✅ Images Provisioned\n\n';
+
+            if (results.success) {
+              body += '**Successfully Provisioned**:\n';
+              results.provisioned.forEach(img => {
+                body += `- ✅ \`${img.name}\`\n`;
+                body += `  - Pull string: \`${img.pullString}\`\n`;
+                body += `  - Repo ID: \`${img.repoId}\`\n\n`;
+              });
+            } else {
+              body += '### ❌ Provisioning Failed\n\n';
+              body += `Error: ${results.error}\n`;
+            }
+
+            body += '**Next Steps**:\n';
+            body += '- Update your Dockerfiles to use these images\n';
+            body += '- Run `docker pull <pull-string>` to test\n';
+
+            const prNumber = parseInt('${{ steps.pr.outputs.pr_number }}');
+
+            github.rest.issues.createComment({
+              issue_number: prNumber,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

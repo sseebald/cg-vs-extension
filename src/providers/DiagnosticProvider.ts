@@ -125,6 +125,62 @@ export class DiagnosticProvider {
       }
     });
 
+    // NEW: Dependency file detection - show diagnostic on RUN install lines
+    const enableLibraryDetection = config.get('enableLibraryDetection', false);
+    if (enableLibraryDetection) {
+      const depFiles = this.converter.extractDependencyFiles(
+        document.getText(),
+        document.uri.fsPath
+      );
+
+      // Find RUN lines that install dependencies
+      const lines = document.getText().split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Check for package installation commands
+        if (line.toUpperCase().startsWith('RUN')) {
+          let ecosystem: string | null = null;
+          let packageManager = '';
+
+          // More flexible patterns - match any pip install command
+          if (/pip3?\s+install/.test(line)) {
+            ecosystem = 'PYTHON';
+            packageManager = 'pip';
+          } else if (/npm\s+(ci|install)/.test(line)) {
+            ecosystem = 'JAVASCRIPT';
+            packageManager = 'npm';
+          } else if (/yarn\s+(install|add)/.test(line)) {
+            ecosystem = 'JAVASCRIPT';
+            packageManager = 'yarn';
+          } else if (/mvn\s+/.test(line)) {
+            ecosystem = 'JAVA';
+            packageManager = 'Maven';
+          } else if (/gradle\s+/.test(line)) {
+            ecosystem = 'JAVA';
+            packageManager = 'Gradle';
+          }
+
+          if (ecosystem) {
+            // Check if there's a corresponding dependency file
+            const hasDepFile = depFiles.some(f => f.ecosystem === ecosystem.toLowerCase());
+
+            if (hasDepFile) {
+              const range = document.lineAt(i).range;
+              const diagnostic = new vscode.Diagnostic(
+                range,
+                `Chainguard ${ecosystem} Libraries available - packages can use CVE-remediated versions`,
+                vscode.DiagnosticSeverity.Information
+              );
+              diagnostic.code = 'chainguard-library-install';
+              diagnostic.source = 'Chainguard Libraries';
+              diagnostics.push(diagnostic);
+            }
+          }
+        }
+      }
+    }
+
     console.log(`[Chainguard] Setting ${diagnostics.length} diagnostics on document`);
     diagnostics.forEach(d => {
       console.log(`  - Line ${d.range.start.line}: ${d.message} (code: ${d.code})`);

@@ -22,8 +22,18 @@ export class CodeActionProvider implements vscode.CodeActionProvider {
     const hasPackageDiagnostic = context.diagnostics.some(
       d => d.code === 'chainguard-package-convert'
     );
+    const hasLibraryDiagnostic = context.diagnostics.some(
+      d => d.code === 'chainguard-library-depfile' || d.code === 'chainguard-library-install'
+    );
 
-    if (!hasImageDiagnostic && !hasPackageDiagnostic) {
+    console.log('[Chainguard] Code actions check:', {
+      hasImageDiagnostic,
+      hasPackageDiagnostic,
+      hasLibraryDiagnostic,
+      diagnosticCodes: context.diagnostics.map(d => d.code)
+    });
+
+    if (!hasImageDiagnostic && !hasPackageDiagnostic && !hasLibraryDiagnostic) {
       return;
     }
 
@@ -43,6 +53,36 @@ export class CodeActionProvider implements vscode.CodeActionProvider {
       actions.push(this.createConvertRunAction(document, line));
       actions.push(this.createConvertDockerfileAction(document));
     }
+
+    // Library configuration actions
+    if (hasLibraryDiagnostic) {
+      let ecosystem: string | null = null;
+
+      // Detect ecosystem from COPY lines
+      if (/requirements.*\.txt/.test(lineText)) {
+        ecosystem = 'python';
+      } else if (/package\.json/.test(lineText)) {
+        ecosystem = 'javascript';
+      } else if (/pom\.xml|build\.gradle/.test(lineText)) {
+        ecosystem = 'java';
+      }
+      // Detect ecosystem from RUN install lines
+      else if (/pip3?\s+install/.test(lineText)) {
+        ecosystem = 'python';
+        // Add auto-convert action for Python requirements.txt
+        actions.push(this.createAutoConvertAction(document, 'python'));
+      } else if (/(npm|yarn)\s+(install|add|ci)/.test(lineText)) {
+        ecosystem = 'javascript';
+      } else if (/mvn\s+|gradle\s+/.test(lineText)) {
+        ecosystem = 'java';
+      }
+
+      if (ecosystem) {
+        actions.push(this.createLibraryConfigAction(ecosystem));
+      }
+    }
+
+    console.log('[Chainguard] Code actions created:', actions.length, actions.map(a => a.title));
 
     return actions.length > 0 ? actions : undefined;
   }
@@ -125,6 +165,37 @@ export class CodeActionProvider implements vscode.CodeActionProvider {
       command: 'chainguard.convertDockerfile',
       title: 'Convert Dockerfile',
       arguments: [document]
+    };
+
+    return action;
+  }
+
+  private createLibraryConfigAction(ecosystem: string): vscode.CodeAction {
+    const action = new vscode.CodeAction(
+      `📚 Configure Chainguard ${ecosystem.toUpperCase()} Libraries`,
+      vscode.CodeActionKind.QuickFix
+    );
+
+    action.command = {
+      command: 'chainguard.configureLibraries',
+      title: 'Configure Libraries',
+      arguments: [ecosystem]
+    };
+
+    return action;
+  }
+
+  private createAutoConvertAction(document: vscode.TextDocument, ecosystem: string): vscode.CodeAction {
+    const action = new vscode.CodeAction(
+      `✨ Auto-convert to CVE-remediated versions`,
+      vscode.CodeActionKind.QuickFix
+    );
+    action.isPreferred = true;
+
+    action.command = {
+      command: 'chainguard.autoConvertDependencies',
+      title: 'Auto-convert Dependencies',
+      arguments: [document, ecosystem]
     };
 
     return action;

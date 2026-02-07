@@ -4,6 +4,15 @@
   "description": "Convert Dockerfiles to use Chainguard's secure, zero-CVE container images",
   "version": "0.1.0",
   "publisher": "chainguard",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sseebald/cg-vs-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sseebald/cg-vs-extension/issues"
+  },
+  "homepage": "https://github.com/sseebald/cg-vs-extension#readme",
   "engines": {
     "vscode": "^1.75.0"
   },
@@ -16,7 +25,11 @@
     "dockerfile",
     "chainguard",
     "security",
-    "containers"
+    "containers",
+    "wolfi",
+    "cve",
+    "vulnerability",
+    "distroless"
   ],
   "activationEvents": [
     "onLanguage:dockerfile"
@@ -69,6 +82,16 @@
           "type": "boolean",
           "default": true,
           "description": "Enable Crystal Ball intelligent image matching with coverage scoring (requires crystal-ball database)"
+        },
+        "chainguard.enableLibraryDetection": {
+          "type": "boolean",
+          "default": false,
+          "description": "Detect dependency files and show Chainguard Libraries availability (EXPERIMENTAL - requires chainctl)"
+        },
+        "chainguard.libraryOrg": {
+          "type": "string",
+          "default": "",
+          "description": "Chainguard organization ID for library entitlements (optional, auto-detected if not set)"
         }
       }
     }
@@ -91,6 +114,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "axios": "^1.13.4",
     "dockerfile-ast": "^0.6.1",
     "js-yaml": "^4.1.0",
     "node-fetch": "^3.3.2"

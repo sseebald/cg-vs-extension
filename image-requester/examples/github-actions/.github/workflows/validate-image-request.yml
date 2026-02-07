@@ -1,0 +1,76 @@
+name: Validate Image Request
+
+on:
+  pull_request:
+    paths:
+      - 'requested-images.yaml'
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install js-yaml axios
+
+      - name: Validate requests
+        id: validate
+        env:
+          CHAINGUARD_TOKEN: ${{ secrets.CHAINGUARD_TOKEN }}
+          CHAINGUARD_ORG_ID: ${{ secrets.CHAINGUARD_ORG_ID }}
+        run: |
+          node .github/scripts/validate.js
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('validation-results.json', 'utf8'));
+
+            let body = '## 🔍 Image Request Validation\n\n';
+
+            if (results.valid) {
+              body += '### ✅ Validation Passed\n\n';
+            } else {
+              body += '### ❌ Validation Failed\n\n';
+            }
+
+            body += '**New Requests**:\n';
+            results.requests.forEach(req => {
+              const icon = req.valid ? '✅' : '❌';
+              body += `- ${icon} \`${req.name}\` - ${req.message}\n`;
+            });
+
+            body += `\n**Summary**:\n`;
+            body += `- Total new requests: ${results.requests.length}\n`;
+            body += `- Valid: ${results.requests.filter(r => r.valid).length}\n`;
+            body += `- Invalid: ${results.requests.filter(r => !r.valid).length}\n`;
+
+            if (results.valid) {
+              body += '\n✅ Ready for review and approval!\n';
+            } else {
+              body += '\n❌ Please fix validation errors before merging.\n';
+            }
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Set PR status
+        if: ${{ !fromJson(steps.validate.outputs.valid || 'false') }}
+        run: exit 1
